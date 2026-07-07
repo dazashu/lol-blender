@@ -3,3 +3,6 @@ this is a plugin made for myself to automate physics for thing like hair in leag
 
 only work for blender 4.2.0
 https://download.blender.org/release/Blender4.2/blender-4.2.0-windows-x64.zip
+
+it use wiggle 2 as a base
+https://github.com/shteeve3d/blender-wiggle-2
