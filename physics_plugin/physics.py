@@ -784,6 +784,7 @@ class WigglePanel:
 
 class WIGGLE_PT_Settings(WigglePanel, bpy.types.Panel):
     bl_label = 'Wiggle 2'
+    bl_order = 0
 
     def draw_header(self, context):
         layout = self.layout

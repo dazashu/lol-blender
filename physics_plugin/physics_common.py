@@ -906,6 +906,107 @@ def clamp_local_rotation_from_identity(action, bone_names, max_deg=45.0):
     return clamped
 
 
+def scale_rotation_from_identity(action, bone_names, amount):
+    """Scale every baked rotation toward rest, keeping the motion's shape.
+
+    ``amount`` is either a float (uniform, 1.0 = unchanged, 0.5 = half swing)
+    or a dict {frame: factor} for a per-frame reduction (frames not in the dict
+    are left unchanged). Tames wild clips (running) without touching the
+    unstable solver — the reduction is exact.
+    """
+    per_frame = isinstance(amount, dict)
+    if not per_frame and amount >= 0.999:
+        return 0
+    bone_set = set(b for b in bone_names if b)
+    scaled = 0
+    groups = {}
+    for fc in action.fcurves:
+        dp = fc.data_path
+        if 'pose.bones["' not in dp or 'rotation_quaternion' not in dp:
+            continue
+        bname = _parse_bone_name(dp)
+        if bname not in bone_set:
+            continue
+        groups.setdefault(bname, {})[fc.array_index] = fc
+
+    identity = MQuat((1.0, 0.0, 0.0, 0.0))
+    for bname, channels in groups.items():
+        if len(channels) < 4:
+            continue
+        kf_maps = {c: {int(kp.co[0]): kp for kp in channels[c].keyframe_points}
+                   for c in range(4)}
+        frames = sorted(
+            set(kf_maps[0]) & set(kf_maps[1]) & set(kf_maps[2]) & set(kf_maps[3])
+        )
+        for f in frames:
+            a = amount.get(f, 1.0) if per_frame else amount
+            if a >= 0.999:
+                continue
+            q = MQuat((kf_maps[0][f].co[1], kf_maps[1][f].co[1],
+                       kf_maps[2][f].co[1], kf_maps[3][f].co[1]))
+            m = q.magnitude
+            if m < 1e-8:
+                continue
+            q = q * (1.0 / m)
+            if q.w < 0.0:
+                q = MQuat((-q.w, -q.x, -q.y, -q.z))
+            q2 = identity.slerp(q, a)
+            kf_maps[0][f].co[1] = q2.w
+            kf_maps[1][f].co[1] = q2.x
+            kf_maps[2][f].co[1] = q2.y
+            kf_maps[3][f].co[1] = q2.z
+            scaled += 1
+        for fc in channels.values():
+            fc.update()
+
+    return scaled
+
+
+def smooth_pre_seam_frame(action, frame_start, frame_end, bone_names):
+    """Rewrite frame_end-1 as the clean interpolation of frame_end-2 and frame_end.
+
+    After the loop seam is snapped (frame_end := frame_start), the drift peak at
+    frame_end-1 is left as an isolated outlier between two good frames. Replace
+    only that one frame with the slerp midpoint of its neighbours (hemisphere-
+    safe); nothing else — and neither seam frame — is touched.
+    """
+    a, b, c = frame_end - 2, frame_end - 1, frame_end
+    if a < frame_start:
+        return
+    bone_set = set(x for x in bone_names if x)
+    quat_groups, others = {}, []
+    for fc in action.fcurves:
+        dp = fc.data_path
+        if 'pose.bones["' not in dp or _parse_bone_name(dp) not in bone_set:
+            continue
+        if 'rotation_quaternion' in dp:
+            quat_groups.setdefault(dp, {})[fc.array_index] = fc
+        else:
+            others.append(fc)
+
+    for fc in others:
+        kf = {int(kp.co[0]): kp for kp in fc.keyframe_points}
+        if a in kf and b in kf and c in kf:
+            kf[b].co[1] = (kf[a].co[1] + kf[c].co[1]) * 0.5
+            fc.update()
+
+    for ch in quat_groups.values():
+        if len(ch) < 4:
+            continue
+        maps = {i: {int(kp.co[0]): kp for kp in ch[i].keyframe_points} for i in range(4)}
+        if not all(a in maps[i] and b in maps[i] and c in maps[i] for i in range(4)):
+            continue
+        qa = MQuat((maps[0][a].co[1], maps[1][a].co[1], maps[2][a].co[1], maps[3][a].co[1]))
+        qc = MQuat((maps[0][c].co[1], maps[1][c].co[1], maps[2][c].co[1], maps[3][c].co[1]))
+        qa.normalize()
+        qc.normalize()
+        qb = qa.slerp(qc, 0.5)
+        for i, v in enumerate((qb.w, qb.x, qb.y, qb.z)):
+            maps[i][b].co[1] = v
+        for fc in ch.values():
+            fc.update()
+
+
 # ---------------------------------------------------------------------------
 #  Real-time collision mesh helpers (shared by boobs & hair)
 # ---------------------------------------------------------------------------

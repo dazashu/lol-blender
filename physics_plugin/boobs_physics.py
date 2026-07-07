@@ -43,47 +43,32 @@ from .wiggle_bake_common import (
 #  20 = unrealistic, exaggerated bounce
 # ---------------------------------------------------------------------------
 
-def get_jiggle_params(intensity):
-    """Map a 1-20 intensity slider to Wiggle 2 bone physics parameters.
+def get_jiggle_params(intensity, smoothness=12, gravity_mult=1.0):
+    """Intensity = amount of jiggle, smoothness = calm (damping), gravity_mult = 0..1.
 
-    Returns dict with: stiff, damp, gravity, mass, stretch, chain.
-
-    Uses exponential interpolation so every slider notch produces a
-    perceptually distinct change. Floor values on stiff and damp are
-    chosen to keep the spring physically stable at all intensities:
-
-      stiff floor 110: previously 55 — too soft. Under fast character
-        motion (jumping, spinning, dashing) the parent bone moves several
-        bone-lengths per frame and a soft spring can't keep up, so the
-        breast tail overshoots into the body. 110 still feels bouncy at
-        slider=20 but holds its shape under motion.
-
-      damp floor 0.6: previously 0.25 — way too low. At 60fps dt=0.0167,
-        effective per-frame factor with damp=0.25 is 1 - 0.25*0.0167 =
-        0.9958, i.e. velocity barely decays. After 100 frames of fast
-        character motion, residual velocity compounds into pops/clipping.
-        0.6 gives per-frame 0.99 — still bouncy but oscillation reliably
-        decays between frames of fast input.
-
-    stretch is intentionally near-zero. Bone stretching looks distorted
-    for breast bones; jiggle should come purely from rotation.
+    Firm stiff/damp floors keep the breast tail stable under fast character
+    motion (prevents overshoot into the body).
     """
-    t = max(0.0, min(1.0, (intensity - 1) / 19.0))  # 0..1 linear
-    t = t * t                                         # quadratic bias: slider 10 ≈ old slider 5
-
+    t = max(0.0, min(1.0, (intensity - 1) / 19.0))
+    t = t * t
+    ts = max(0.0, min(1.0, (smoothness - 1) / 19.0))
     return {
-        'stiff':   lerp_exp(650.0, 110.0, t),  # firmer floor — resists runaway velocity
-        'damp':    lerp_exp(12.0,   0.60, t),  # firmer floor — kills residual velocity
-        'gravity': lerp(0.0, 0.03, t),         # near-zero — any more makes them droop
-        'mass':    lerp_exp(0.3, 1.5, t),      # slightly lighter max — less momentum
-        'stretch': lerp(0.0, 0.02, t),         # tiny — stretching looks distorted
+        'stiff':   lerp_exp(650.0, 110.0, t),
+        'damp':    lerp_exp(0.60, 12.0, ts),
+        'gravity': lerp(0.0, 0.03, t) * gravity_mult,
+        'mass':    lerp_exp(0.3, 1.5, t),
+        'stretch': lerp(0.0, 0.02, t),
         'chain':   True,
     }
 
 
-def apply_wiggle_to_bones(context, armature_obj, bone_names, intensity):
+def apply_wiggle_to_bones(context, armature_obj, bone_names, intensity,
+                          smoothness=12, gravity_mult=1.0):
     """Configure Wiggle 2 on breast bones with intensity-mapped parameters."""
-    return configure_wiggle_bones(context, armature_obj, bone_names, get_jiggle_params(intensity))
+    p = get_jiggle_params(intensity, smoothness, gravity_mult)
+    print(f"[Daza Boobs] intensity={intensity} smoothness={smoothness} gravity={gravity_mult} "
+          f"-> stiff={p['stiff']:.1f} damp={p['damp']:.2f} grav={p['gravity']:.4f} mass={p['mass']:.2f}")
+    return configure_wiggle_bones(context, armature_obj, bone_names, p)
 
 
 # ---------------------------------------------------------------------------
@@ -121,6 +106,16 @@ class BoobsPhysicsProperties(PropertyGroup):
         name="Jiggle Intensity",
         description="1 = barely any jiggle, 10 = natural, 20 = exaggerated bounce",
         default=10, min=1, max=20
+    )
+    smoothness: IntProperty(
+        name="Smoothness",
+        description="1 = bouncy/springy, 20 = slow and calm (heavy damping)",
+        default=12, min=1, max=20
+    )
+    gravity: FloatProperty(
+        name="Gravity",
+        description="1.0 = normal gravity, lower = floaty/slow-motion feel",
+        default=1.0, min=0.0, max=1.0, step=5, precision=2
     )
 
     # Animation folder browser
@@ -268,7 +263,7 @@ def _setup_boobs_collision(armature_obj, bone_names, coll_collection):
 
 
 def bake_wiggle_for_current_action(context, armature_obj, bone_names, intensity,
-                                    coll_collection=None):
+                                    smoothness=12, gravity_mult=1.0, coll_collection=None):
     """Bake wiggle physics into the current action.
 
     Loop animations use a ramp-up convergence approach:
@@ -305,11 +300,6 @@ def bake_wiggle_for_current_action(context, armature_obj, bone_names, intensity,
 
     is_loop = _detect_animation_loops(action, frame_start, frame_end)
     print(f"[BOOBS BAKE] is_loop={is_loop}")
-
-    # Cap intensity for non-loops (no preroll → less room for error).
-    effective_intensity = intensity if is_loop else min(intensity, 12)
-    if effective_intensity != intensity:
-        apply_wiggle_to_bones(context, armature_obj, bone_names, effective_intensity)
 
     select_armature(context, armature_obj)
     bpy.ops.object.mode_set(mode='POSE')
@@ -357,7 +347,7 @@ def bake_wiggle_for_current_action(context, armature_obj, bone_names, intensity,
         # Final pass (bake): one more full-physics cycle, this time recording
         #   the bone transforms for keyframe insertion.
 
-        target_params = get_jiggle_params(effective_intensity)
+        target_params = get_jiggle_params(intensity, smoothness, gravity_mult)
         physics_pbs = [armature_obj.pose.bones[n] for n in bone_names
                        if n and n in armature_obj.pose.bones]
         total_frames = frame_end - frame_start
@@ -644,7 +634,8 @@ class BOOBS_OT_PreviewPhysics(Operator):
         strip_physics_keyframes(current_action, bone_names)
 
         armature_obj.wiggle_freeze = False
-        configured = apply_wiggle_to_bones(context, armature_obj, bone_names, props.jiggle_intensity)
+        configured = apply_wiggle_to_bones(context, armature_obj, bone_names,
+                                           props.jiggle_intensity, props.smoothness, props.gravity)
         if not configured:
             self.report({'ERROR'}, "Could not find the specified bones in the armature")
             return {'CANCELLED'}
@@ -671,7 +662,7 @@ class BOOBS_OT_PreviewPhysics(Operator):
         props.status_text = "Baking physics preview..."
         ok, message = bake_wiggle_for_current_action(
             context, armature_obj, bone_names, props.jiggle_intensity,
-            coll_collection=coll_collection,
+            props.smoothness, props.gravity, coll_collection=coll_collection,
         )
 
         if coll_collection:
@@ -993,7 +984,8 @@ class BOOBS_OT_ApplyToAll(Operator):
         disabled_mods, hidden_objs = hide_meshes_for_batch(context)
 
         # Configure wiggle once after mesh hiding (mode switch is now safe).
-        apply_wiggle_to_bones(context, armature_obj, bone_names, props.jiggle_intensity)
+        apply_wiggle_to_bones(context, armature_obj, bone_names, props.jiggle_intensity,
+                              props.smoothness, props.gravity)
 
         for idx, anim_item in enumerate(props.animations):
             props.status_text = f"Processing {idx + 1}/{total}: {anim_item.name}..."
@@ -1030,14 +1022,12 @@ class BOOBS_OT_ApplyToAll(Operator):
                 # simulation starts from rest pose — same as preview does.
                 strip_physics_keyframes(new_action, bone_names)
 
-                # Re-apply wiggle each iteration: bake_wiggle_for_current_action may
-                # change effective_intensity for non-loop clips, so the next iteration
-                # (which could be a loop) needs the full intensity restored.
-                apply_wiggle_to_bones(context, armature_obj, bone_names, props.jiggle_intensity)
+                apply_wiggle_to_bones(context, armature_obj, bone_names,
+                                      props.jiggle_intensity, props.smoothness, props.gravity)
 
                 ok, msg = bake_wiggle_for_current_action(
                     context, armature_obj, bone_names, props.jiggle_intensity,
-                    coll_collection=coll_collection,
+                    props.smoothness, props.gravity, coll_collection=coll_collection,
                 )
                 if not ok:
                     print(f"Bake failed for {anim_item.name}: {msg}")
@@ -1135,6 +1125,7 @@ class BOOBS_PT_BoobsPhysics(Panel):
     bl_region_type = 'UI'
     bl_category    = 'Daza Physics'
     bl_options     = {'DEFAULT_CLOSED'}
+    bl_order       = 2
 
     def draw_header(self, context):
         self.layout.label(text="", icon_value=icons.get_icon("icon_52"))
@@ -1175,6 +1166,8 @@ class BOOBS_PT_BoobsPhysics(Panel):
         label = "▸ Subtle" if i <= 3 else "▸ Mild" if i <= 7 else "▸ Natural" if i <= 13 \
             else "▸ Bouncy" if i <= 17 else "▸ Extreme!"
         row.label(text=label)
+        col.prop(props, "smoothness", slider=True)
+        col.prop(props, "gravity", slider=True)
 
         # --- Body collision ---
         box = layout.box()

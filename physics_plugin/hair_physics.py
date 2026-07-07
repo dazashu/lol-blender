@@ -26,13 +26,13 @@ from .physics_common import (
     configure_wiggle_bones, clear_wiggle_from_bones, strip_physics_keyframes,
     find_default_hair_collision_bones, post_bake_collision_correct,
     precompute_collision_radii, hide_meshes_for_batch, restore_meshes_after_batch,
-    smooth_physics_spikes,
+    smooth_physics_spikes, scale_rotation_from_identity, smooth_pre_seam_frame,
     lerp, lerp_exp,
     _bone_capsule_radius,
 )
 from .wiggle_bake_common import (
     _detect_animation_loops,
-    _copy_loop_end_to_start,
+    _snap_loop_seam,
     _restore_nonloop_start_to_tpose,
     _smooth_boundary_frames,
     _set_linear_interpolation,
@@ -63,93 +63,62 @@ from .wiggle_bake_common import (
 #  custom      — no preset, pure intensity-based defaults (legacy behavior)
 # ---------------------------------------------------------------------------
 
+# damp_lo = smoothness 1 (bouncy), damp_hi = smoothness 20 (calm/slow).
 _HAIR_TYPE_PRESETS = {
     'ponytail': {
-        'stiff_hi':   400.0,   # slider=1
-        'stiff_lo':    40.0,   # slider=20
-        'damp_hi':      8.0,
-        'damp_lo':      0.35,
-        'grav_lo':      0.05,
-        'grav_hi':      0.35,
-        'mass_hi':      0.15,
-        'mass_lo':      1.2,
-        'stretch_hi':   0.0,
-        'stretch_lo':   0.04,
+        'stiff_hi': 400.0, 'stiff_lo': 40.0,
+        'damp_lo': 0.35, 'damp_hi': 8.0,
+        'grav_lo': 0.05, 'grav_hi': 0.35,
+        'mass_hi': 0.15, 'mass_lo': 1.2,
+        'stretch_hi': 0.0, 'stretch_lo': 0.04,
     },
     'long_loose': {
-        # Long hair: much softer stiffness, more gravity so it hangs,
-        # slightly heavier mass so bones at the tip don't whip.
-        'stiff_hi':   260.0,
-        'stiff_lo':    18.0,
-        'damp_hi':      6.0,
-        'damp_lo':      0.30,
-        'grav_lo':      0.15,
-        'grav_hi':      0.65,
-        'mass_hi':      0.25,
-        'mass_lo':      1.8,
-        'stretch_hi':   0.0,
-        'stretch_lo':   0.06,
+        'stiff_hi': 260.0, 'stiff_lo': 18.0,
+        'damp_lo': 0.30, 'damp_hi': 6.0,
+        'grav_lo': 0.15, 'grav_hi': 0.65,
+        'mass_hi': 0.25, 'mass_lo': 1.8,
+        'stretch_hi': 0.0, 'stretch_lo': 0.06,
     },
     'short_bob': {
-        # Very subtle: stiff, light, barely any gravity.
-        'stiff_hi':   600.0,
-        'stiff_lo':    90.0,
-        'damp_hi':     10.0,
-        'damp_lo':      0.60,
-        'grav_lo':      0.02,
-        'grav_hi':      0.15,
-        'mass_hi':      0.10,
-        'mass_lo':      0.80,
-        'stretch_hi':   0.0,
-        'stretch_lo':   0.02,
+        'stiff_hi': 600.0, 'stiff_lo': 90.0,
+        'damp_lo': 0.60, 'damp_hi': 10.0,
+        'grav_lo': 0.02, 'grav_hi': 0.15,
+        'mass_hi': 0.10, 'mass_lo': 0.80,
+        'stretch_hi': 0.0, 'stretch_lo': 0.02,
     },
     'twin_tails': {
-        # Side tails: slightly stiffer than ponytail so they don't cross,
-        # lower gravity so they stay to the sides, firmer damping floor.
-        'stiff_hi':   480.0,
-        'stiff_lo':    55.0,
-        'damp_hi':      8.0,
-        'damp_lo':      0.45,
-        'grav_lo':      0.03,
-        'grav_hi':      0.25,
-        'mass_hi':      0.15,
-        'mass_lo':      1.0,
-        'stretch_hi':   0.0,
-        'stretch_lo':   0.03,
+        'stiff_hi': 480.0, 'stiff_lo': 55.0,
+        'damp_lo': 0.45, 'damp_hi': 8.0,
+        'grav_lo': 0.03, 'grav_hi': 0.25,
+        'mass_hi': 0.15, 'mass_lo': 1.0,
+        'stretch_hi': 0.0, 'stretch_lo': 0.03,
     },
 }
 
 
-def get_hair_params(intensity, hair_type='ponytail'):
-    """Map (1-20 intensity, hair_type) to Wiggle 2 params tuned for hair bones.
-
-    Hair differences vs breast bones:
-      - gravity is noticeable (hair hangs and swings visibly)
-      - stiffness is lower overall (hair is more flexible)
-      - chain coupling is critical (bones in a chain pull each other)
-      - mass is lighter (hair strands aren't heavy)
-      - damping floor is slightly higher to prevent wild fly-away
-    """
+def get_hair_params(intensity, smoothness=12, gravity_mult=1.0, hair_type='ponytail'):
+    """Linear intensity for a clear 1→20 spread (1 = stiff/subtle, 20 = wild).
+    smoothness drives damping, gravity_mult scales gravity."""
     t = max(0.0, min(1.0, (intensity - 1) / 19.0))
-    t = t * t  # quadratic bias: natural feel in the lower half
-
+    ts = max(0.0, min(1.0, (smoothness - 1) / 19.0))
     p = _HAIR_TYPE_PRESETS.get(hair_type, _HAIR_TYPE_PRESETS['ponytail'])
-
     return {
         'stiff':   lerp_exp(p['stiff_hi'], p['stiff_lo'], t),
-        'damp':    lerp_exp(p['damp_hi'],  p['damp_lo'],  t),
-        'gravity': lerp(p['grav_lo'], p['grav_hi'], t),
-        'mass':    lerp_exp(p['mass_hi'],  p['mass_lo'],  t),
+        'damp':    lerp_exp(p['damp_lo'], p['damp_hi'], ts),
+        'gravity': lerp(p['grav_lo'], p['grav_hi'], t) * gravity_mult,
+        'mass':    lerp_exp(p['mass_hi'], p['mass_lo'], t),
         'stretch': lerp(p['stretch_hi'], p['stretch_lo'], t),
         'chain':   True,
     }
 
 
-def _apply_wiggle(context, arm, bone_names, intensity, hair_type='ponytail'):
-    """Configure Wiggle 2 on hair bones with intensity-mapped parameters."""
-    return configure_wiggle_bones(
-        context, arm, bone_names, get_hair_params(intensity, hair_type)
-    )
+def _apply_wiggle(context, arm, bone_names, intensity, smoothness=12,
+                  gravity_mult=1.0, hair_type='ponytail'):
+    p = get_hair_params(intensity, smoothness, gravity_mult, hair_type)
+    print(f"[Daza Hair] intensity={intensity} smoothness={smoothness} gravity={gravity_mult} "
+          f"type={hair_type} -> stiff={p['stiff']:.1f} damp={p['damp']:.2f} "
+          f"grav={p['gravity']:.4f} mass={p['mass']:.2f}")
+    return configure_wiggle_bones(context, arm, bone_names, p)
 
 
 # ---------------------------------------------------------------------------
@@ -433,6 +402,28 @@ class HairPhysicsProperties(PropertyGroup):
         description="1 = barely moves, 10 = natural sway, 20 = exaggerated",
         default=8, min=1, max=20
     )
+    smoothness: IntProperty(
+        name="Smoothness",
+        description="1 = bouncy/springy, 20 = slow and calm (heavy damping)",
+        default=12, min=1, max=20
+    )
+    gravity: FloatProperty(
+        name="Gravity",
+        description="1.0 = normal gravity, lower = floaty/slow-motion feel",
+        default=1.0, min=0.0, max=1.0, step=5, precision=2
+    )
+    motion: FloatProperty(
+        name="Motion",
+        description="Tames hair swing on fast/shaky frames — also shrinks the loop "
+                    "drift so the seam closes clean. 1.0 = off, lower (~0.5) = calmer",
+        default=1.0, min=0.0, max=1.0, step=5, precision=2
+    )
+    motion_ref_bone: StringProperty(
+        name="Ref Bone",
+        description="Bone that drives Motion (detects running vs jumping). "
+                    "Empty = Motion does nothing — you set the bone yourself",
+        default=""
+    )
 
     # Preset tuning curve. Different hair shapes need different stiffness,
     # gravity, and mass floors; one curve can't cover ponytail AND long loose
@@ -506,8 +497,59 @@ def _get_bone_names(props):
 #  Bake pipeline
 # ---------------------------------------------------------------------------
 
-def _bake_hair(context, arm, bone_names, intensity, coll_collection=None,
-               hair_type='ponytail'):
+def _adaptive_motion_factors(context, arm, ref_bone, f0, f1, strength):
+    """Per-frame reduction factors from a reference bone's jerk.
+
+    Samples the reference bone's world path and measures how violently its
+    motion changes each frame (running = high, smooth arc = low). Returns
+    {frame: factor} with factor in [strength, 1.0]: high jerk → near strength
+    (calmed), smooth → 1.0 (left to fly).
+    """
+    if f1 - f0 < 3:
+        return {}
+    scene = context.scene
+    saved = scene.frame_current
+    arm.wiggle_freeze = True  # stop the sim re-running on frame_set
+    pos = {}
+    for f in range(f0, f1 + 1):
+        scene.frame_set(f)
+        pb = arm.pose.bones.get(ref_bone)
+        if pb is None:
+            scene.frame_set(saved)
+            return {}
+        pos[f] = (arm.matrix_world @ pb.head).copy()
+    scene.frame_set(saved)
+
+    # Jerk (rate of change of acceleration) separates rhythmic running (high)
+    # from a smooth jump arc (near zero), so jumps keep flying.
+    vel = {f: pos[f] - pos[f - 1] for f in range(f0 + 1, f1 + 1)}
+    acc = {f: vel[f] - vel[f - 1] for f in range(f0 + 2, f1 + 1)}
+    jerk = {f: (acc[f] - acc[f - 1]).length for f in range(f0 + 3, f1 + 1)}
+    if not jerk:
+        return {}
+    for f in range(f0, f0 + 3):
+        jerk[f] = jerk[f0 + 3]
+    sm = {}
+    for f in range(f0, f1 + 1):
+        w = [jerk[g] for g in (f - 1, f, f + 1) if g in jerk]
+        sm[f] = sum(w) / len(w)
+    amax = max(sm.values())
+    if amax < 1e-9:
+        return {}
+    return {f: 1.0 - (1.0 - strength) * (sm[f] / amax) for f in range(f0, f1 + 1)}
+
+
+def _apply_motion_reduction(context, arm, action, bone_names, f0, f1):
+    hp = context.scene.hair_physics
+    ref = hp.motion_ref_bone.strip()
+    if hp.motion >= 0.999 or not ref or not arm.pose.bones.get(ref):
+        return  # Motion at 1.0, or no Ref Bone → do nothing
+    factors = _adaptive_motion_factors(context, arm, ref, f0, f1, hp.motion)
+    if factors:
+        scale_rotation_from_identity(action, bone_names, factors)
+
+
+def _bake_hair(context, arm, bone_names, coll_collection=None):
     """Detect loop, preroll, bake with optional real-time collision.
 
     Same pipeline as boobs but with real-time collision mesh support
@@ -530,10 +572,6 @@ def _bake_hair(context, arm, bone_names, intensity, coll_collection=None,
 
     is_loop = _detect_animation_loops(action, frame_start, frame_end)
 
-    eff = intensity if is_loop else min(intensity, 13)
-    if eff != intensity:
-        _apply_wiggle(context, arm, bone_names, eff, hair_type)
-
     select_armature(context, arm)
     bpy.ops.object.mode_set(mode='POSE')
 
@@ -550,7 +588,7 @@ def _bake_hair(context, arm, bone_names, intensity, coll_collection=None,
     bpy.ops.wiggle.reset()
 
     old_iterations = scene.wiggle.iterations
-    scene.wiggle.iterations = max(old_iterations, 10)
+    scene.wiggle.iterations = max(old_iterations, 20)
 
     if is_loop:
         # --- ITERATIVE BAKE FOR PERFECT LOOP ---
@@ -748,16 +786,21 @@ def _bake_hair(context, arm, bone_names, intensity, coll_collection=None,
     # --- Post-bake ---
     action = arm.animation_data.action
     if action:
+        _apply_motion_reduction(context, arm, action, bone_names, frame_start, frame_end)
         # Spike smoother catches isolated 1-frame physics pops. Non-cascading
-        # so legitimate fast swings are preserved. No rotation clamp is used
-        # for hair — long hair legitimately swings 90°+ from rest on dramatic
-        # end poses, and the phase-1 NaN guard already handles actual blow-
-        # ups without clipping natural motion.
+        # so legitimate fast swings are preserved.
         smooth_physics_spikes(action, bone_names)
         _set_linear_interpolation(action, bone_names)
         _clean_tpose_keyframes(action, bone_names)
         if is_loop:
-            _copy_loop_end_to_start(action, frame_start, frame_end, bone_names)
+            # Copy the good first frame ONTO the last (not the reverse): the
+            # last frame drifts up under fast motion, so overwrite it with the
+            # clean settle-pass first frame. Loop closes, no drifted last frame.
+            _snap_loop_seam(action, frame_start, frame_end, bone_names)
+            # Snapping the last frame down leaves the drift peak at frame_end-1
+            # as an isolated outlier — rewrite just that one frame as the clean
+            # slerp of its two good neighbours. Nothing else is touched.
+            smooth_pre_seam_frame(action, frame_start, frame_end, bone_names)
             _fix_quaternion_continuity(action, bone_names)
         else:
             _fix_quaternion_continuity(action, bone_names)
@@ -934,8 +977,8 @@ class HAIR_OT_Preview(Operator):
 
         strip_physics_keyframes(action, bone_names)
         arm.wiggle_freeze = False
-        configured = _apply_wiggle(context, arm, bone_names,
-                                   props.jiggle_intensity, props.hair_type)
+        configured = _apply_wiggle(context, arm, bone_names, props.jiggle_intensity,
+                                   props.smoothness, props.gravity, props.hair_type)
         if not configured:
             self.report({'ERROR'}, "None of the listed bones found in armature")
             return {'CANCELLED'}
@@ -953,9 +996,7 @@ class HAIR_OT_Preview(Operator):
                 )
 
         props.status_text = "Baking hair physics..."
-        ok, msg = _bake_hair(context, arm, bone_names, props.jiggle_intensity,
-                             coll_collection=coll_collection,
-                             hair_type=props.hair_type)
+        ok, msg = _bake_hair(context, arm, bone_names, coll_collection=coll_collection)
 
         # Clean up collision meshes (done with the simulation).
         if coll_collection:
@@ -1280,8 +1321,8 @@ class HAIR_OT_ApplyToAll(Operator):
         disabled_mods, hidden_objs = hide_meshes_for_batch(context)
 
         # Configure wiggle once after mesh hiding.
-        _apply_wiggle(context, armature_obj, bone_names,
-                      props.jiggle_intensity, props.hair_type)
+        _apply_wiggle(context, armature_obj, bone_names, props.jiggle_intensity,
+                      props.smoothness, props.gravity, props.hair_type)
 
         for idx, anim_item in enumerate(props.animations):
             props.status_text = f"Processing {idx + 1}/{total}: {anim_item.name}..."
@@ -1318,15 +1359,11 @@ class HAIR_OT_ApplyToAll(Operator):
                 # simulation starts from rest pose — same as preview does.
                 strip_physics_keyframes(new_action, bone_names)
 
-                # Re-apply wiggle each iteration: _bake_hair may lower effective
-                # intensity for non-loop clips, so loops that follow need it reset.
-                _apply_wiggle(context, armature_obj, bone_names,
-                              props.jiggle_intensity, props.hair_type)
+                _apply_wiggle(context, armature_obj, bone_names, props.jiggle_intensity,
+                              props.smoothness, props.gravity, props.hair_type)
 
                 ok, msg = _bake_hair(context, armature_obj, bone_names,
-                                     props.jiggle_intensity,
-                                     coll_collection=coll_collection,
-                                     hair_type=props.hair_type)
+                                     coll_collection=coll_collection)
                 if not ok:
                     print(f"Bake failed for {anim_item.name}: {msg}")
                     fail_count += 1
@@ -1432,6 +1469,7 @@ class HAIR_PT_Physics(Panel):
     bl_region_type = 'UI'
     bl_category    = 'Daza Physics'
     bl_options     = {'DEFAULT_CLOSED'}
+    bl_order       = 3
 
     def draw_header(self, _context):
         self.layout.label(text="", icon_value=icons.get_icon("icon_52"))
@@ -1523,6 +1561,11 @@ class HAIR_PT_Physics(Panel):
         label = "▸ Stiff" if i <= 3 else "▸ Subtle" if i <= 7 else "▸ Natural" if i <= 13 \
             else "▸ Flowing" if i <= 17 else "▸ Wild!"
         row.label(text=label)
+        col.prop(props, "smoothness", slider=True)
+        col.prop(props, "gravity", slider=True)
+        col.prop(props, "motion", slider=True)
+        if props.motion < 1.0 and arm:
+            col.prop_search(props, "motion_ref_bone", arm.pose, "bones", text="Ref Bone")
 
         # --- Body collision ---
         box = layout.box()
