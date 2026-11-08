@@ -1,0 +1,15 @@
+LoL Blender 2.2.10 - exact preview cache corrections (test build)
+
+Fixes compared with 2.2.9:
+- Cache keys use authored object transform inputs and animation curves, not evaluated world matrices that change on every frame. Parent objects and partially animated channels are included.
+- Unkeyed transforms on physics ancestors and collider bones invalidate the cache after edits. Restoring a temporary calculation preserves exact source channel values instead of decomposing matrices and introducing rotation noise.
+- Worker execution and startup failures are remembered. Subsequent frame requests do not restart them. Change the relevant inputs or press Reset to retry.
+- Disk-cache schema/version updated so old cached results are not reused.
+
+The shared exact cache requires a saved Physics Pose. It includes first-frame gravity settling, movement limits, Motion and loop finalization. Preview and Bake use the same finalized samples; Bake reuses a prepared result. Export retains the dense trajectory within the ANM format's numerical precision.
+Missing results are prepared in an isolated background Blender process. Until Exact preview ready, the viewport shows the source animation, not the final physics. New configurations still require an initial calculation; its duration depends on the animation and CPU load. The cache persists in the OS temporary folder across sessions and is disposable.
+
+Validation: 36 targeted tests pass. Real worker test: one initial launch, one launch after an unkeyed parent edit, zero extra launches from scrubbing an animated armature; cached and independently recalculated bake agree. Briar run1 worker preview/fresh bake maximum matrix-component difference: 2.4e-7. Export/reimport at equal time: 3.2e-5. A new Blender process restores the disk cache without calculating again.
+No user blend or original animation was overwritten. Tests use separate output directories.
+This release does not certify that all 74 Briar animations are free of collision penetrations or sharp rotations. No in-game validation is claimed.
+Native module: 0.24.11. No character-specific or animation-name-specific solver rules.

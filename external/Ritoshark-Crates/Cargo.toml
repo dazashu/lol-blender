@@ -1,0 +1,58 @@
+[workspace]
+resolver = "2"
+members = ["crates/*"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/RitoShark/RitoShark-Crates"
+
+[workspace.dependencies]
+# Internal crates (path deps; referenced as `{ workspace = true }`)
+rs_io = { path = "crates/rs_io" }
+rs_hash = { path = "crates/rs_hash" }
+rs_math = { path = "crates/rs_math" }
+rs_file = { path = "crates/rs_file" }
+rs_bin = { path = "crates/rs_bin" }
+rs_wad = { path = "crates/rs_wad" }
+rs_tex = { path = "crates/rs_tex" }
+rs_mesh = { path = "crates/rs_mesh" }
+rs_anim = { path = "crates/rs_anim" }
+rs_mapgeo = { path = "crates/rs_mapgeo" }
+rs_rst = { path = "crates/rs_rst" }
+rs_rman = { path = "crates/rs_rman" }
+rs_audio = { path = "crates/rs_audio" }
+rs_troybin = { path = "crates/rs_troybin" }
+rs_luabin = { path = "crates/rs_luabin" }
+rs_legacy = { path = "crates/rs_legacy" }
+ritoshark = { path = "crates/ritoshark" }
+
+# Common external crates (pinned at the workspace level)
+glam = "0.29"
+byteorder = "1.5"
+memmap2 = "0.9"
+zstd = "0.13"
+flate2 = "1"
+xxhash-rust = { version = "0.8", features = ["xxh64", "xxh3"] }
+indexmap = "2"
+bytemuck = { version = "1", features = ["derive"] }
+thiserror = "2"
+miette = { version = "7", features = ["fancy"] }
+num_enum = "0.7"
+rayon = "1"
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "tga", "bmp", "webp"] }
+clap = { version = "4", features = ["derive"] }
+insta = "1"
+criterion = "0.5"
+serde_json = { version = "1", features = ["preserve_order"] }
+regex = "1"
+walkdir = "2"
+assert_cmd = "2"
+predicates = "3"
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1

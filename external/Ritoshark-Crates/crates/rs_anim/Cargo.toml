@@ -1,0 +1,13 @@
+[package]
+name = "rs_anim"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+
+[dependencies]
+thiserror = { workspace = true }
+rs_io = { workspace = true }
+rs_math = { workspace = true }
+rs_hash = { workspace = true }

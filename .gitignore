@@ -1,0 +1,14 @@
+**/target/
+**/__pycache__/
+*.py[cod]
+*.pyd
+*.dll
+*.pdb
+*.blend*
+*.zip
+dist/
+docs-and-tests/samples/
+docs-and-tests/tests/_scratch/
+docs-and-tests/tests/results/
+local_settings.json
+.DS_Store

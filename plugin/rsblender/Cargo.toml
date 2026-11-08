@@ -1,0 +1,40 @@
+# Rust half of the LoL Blender plugin: a PyO3 layer over the Ritoshark crates.
+#
+# The empty [workspace] keeps Cargo from adopting a parent workspace (same as Rubyre).
+[workspace]
+
+[package]
+name = "rsblender"
+version = "0.25.0"
+edition = "2021"
+license = "GPL-3.0-or-later"
+publish = false
+
+[lib]
+# Imported as `_rsblender`; build.ps1 copies the .dll as a .pyd.
+name = "_rsblender"
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+ryu = "1.0.23"
+# abi3-py39: one binary for every CPython 3.9+ (Blender ships python3.dll).
+pyo3 = { version = "0.29", features = ["abi3-py39", "extension-module"] }
+
+rs_anim = { path = "../../external/Ritoshark-Crates/crates/rs_anim" }
+rs_mesh = { path = "../../external/Ritoshark-Crates/crates/rs_mesh" }
+rs_mapgeo = { path = "../../external/Ritoshark-Crates/crates/rs_mapgeo" }
+rs_math = { path = "../../external/Ritoshark-Crates/crates/rs_math" }
+# Same glam as rs_math, used directly for the f64 types (composition and inversion in f64).
+glam = "0.29"
+rs_hash = { path = "../../external/Ritoshark-Crates/crates/rs_hash" }
+rs_io = { path = "../../external/Ritoshark-Crates/crates/rs_io" }
+faer = { version = "0.24.4", default-features = false, features = ["std", "sparse-linalg"] }
+
+[lints.rust]
+# the MSVC linker's normal "library created" note is not a warning
+linker_messages = "allow"
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1

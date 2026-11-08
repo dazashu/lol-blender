@@ -1,0 +1,12 @@
+[package]
+name = "rs_mapgeo"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+
+[dependencies]
+rs_io = { workspace = true }
+rs_math = { workspace = true }
+thiserror = { workspace = true }

@@ -1,0 +1,11 @@
+[package]
+name = "rs_io"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+rs_math = { workspace = true }
+memmap2 = { workspace = true }
+thiserror = { workspace = true }
