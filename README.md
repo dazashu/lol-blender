@@ -5,9 +5,7 @@ Tested on Blender 4.2.0, Windows x64.
 
 ## 2.3.0
 
-- Restores the physics of release 2.2.0: solver, controls, live preview, collisions and bake behavior.
-- Keeps current mesh/skeleton/animation fixes, custom-bone identity checks, animation precision and zero-scale visibility.
-- Supports SKN meshes above 65535 total vertices using submesh-relative indices, with a limit of 65535 vertices per exported submesh after UV/normal splitting.
+*- Supports SKN meshes above 65535 total vertices using submesh-relative indices, with a limit of 65535 vertices per exported submesh after UV/normal splitting.
 - Keeps safe export replacement, bake failure recovery, shared-action safety and timeline restoration.
 
 Already-baked keys are not automatically changed. Restore the original action or reimport the animation before baking again.
